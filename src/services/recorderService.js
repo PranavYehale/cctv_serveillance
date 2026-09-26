@@ -1,8 +1,7 @@
 /**
- * Frame-Buffer Video Recorder Service with True 3-Second Pre-Roll.
- * Uses GPU ImageBitmap frame buffering to preserve 3 seconds of pre-event video context.
- * On human detection, feeds pre-roll frames + live stream to MediaRecorder,
- * producing 100% spec-compliant MP4/WebM video files with valid headers and accurate duration.
+ * Frame-Buffer Video Recorder Service with True 3-Second Pre-Roll
+ * and Fixed Target Duration Options (e.g. 2:30 Min / 150 Seconds).
+ * Uses GPU ImageBitmap frame buffering to preserve pre-event video context.
  */
 
 export class RecorderService {
@@ -21,11 +20,13 @@ export class RecorderService {
     this.mediaRecorder = null;
     this.recordedChunks = [];
 
-    // Activity Timing
+    // Activity Timing & Duration Controls
     this.activityStartTime = null;
     this.activityMetadata = null;
     this.tailTimer = null;
+    this.fixedDurationTimer = null;
     this.TAIL_DURATION_MS = 2500; // 2.5s tail after human leaves
+    this.videoDurationTarget = 'auto'; // 'auto' | 150 (2:30 min)
 
     this.mimeType = 'video/webm';
     this.fileExtension = 'webm';
@@ -67,6 +68,10 @@ export class RecorderService {
     this.fileExtension = selected.ext;
   }
 
+  setVideoDurationTarget(target) {
+    this.videoDurationTarget = target; // 'auto' or seconds integer e.g. 150
+  }
+
   clearFrameBuffer() {
     while (this.frameBuffer.length > 0) {
       const item = this.frameBuffer.shift();
@@ -76,26 +81,18 @@ export class RecorderService {
     }
   }
 
-  /**
-   * Called on every animation/detection frame to maintain the 3-second pre-roll buffer
-   * and feed frames to active MediaRecorder.
-   */
   async pushFrame(sourceCanvasOrVideo) {
     if (!this.isMonitoring || !sourceCanvasOrVideo) return;
 
     try {
-      // Capture lightweight GPU ImageBitmap of current frame
       const bitmap = await createImageBitmap(sourceCanvasOrVideo);
 
       if (this.isRecordingActivity && this.recCtx) {
-        // Draw frame to active recording canvas
         this.recCtx.drawImage(bitmap, 0, 0, this.recCanvas.width, this.recCanvas.height);
-        bitmap.close(); // Release bitmap memory immediately when recording live
+        bitmap.close();
       } else {
-        // Push frame into pre-roll ring buffer
         this.frameBuffer.push({ bitmap, timestamp: Date.now() });
 
-        // Maintain 3-second cap
         if (this.frameBuffer.length > this.MAX_PRE_ROLL_FRAMES) {
           const oldest = this.frameBuffer.shift();
           if (oldest && oldest.bitmap && typeof oldest.bitmap.close === 'function') {
@@ -104,20 +101,19 @@ export class RecorderService {
         }
       }
     } catch (err) {
-      // Ignore transient bitmap creation errors during resize
+      // Safe catch
     }
   }
 
   async onHumanDetected(videoOrCanvasElement, metadata = {}) {
     if (!this.isMonitoring) return;
 
-    // Clear any pending tail timer if human reappeared
+    // Clear tail timer if human reappeared in 'auto' mode
     if (this.tailTimer) {
       clearTimeout(this.tailTimer);
       this.tailTimer = null;
     }
 
-    // Start a new activity recording session if not already recording
     if (!this.isRecordingActivity) {
       this.isRecordingActivity = true;
       this.activityStartTime = Date.now();
@@ -126,17 +122,14 @@ export class RecorderService {
       const width = videoOrCanvasElement.videoWidth || videoOrCanvasElement.width || 1280;
       const height = videoOrCanvasElement.videoHeight || videoOrCanvasElement.height || 720;
 
-      // Setup Offscreen Recording Canvas
       this.recCanvas = document.createElement('canvas');
       this.recCanvas.width = width;
       this.recCanvas.height = height;
       this.recCtx = this.recCanvas.getContext('2d');
 
-      // Flush 3-second pre-roll frame buffer onto recording canvas first
       const preRollBitmaps = [...this.frameBuffer];
-      this.frameBuffer = []; // Clear array reference
+      this.frameBuffer = [];
 
-      // Draw all pre-roll frames to set up baseline context
       for (const item of preRollBitmaps) {
         if (item && item.bitmap) {
           this.recCtx.drawImage(item.bitmap, 0, 0, width, height);
@@ -144,7 +137,6 @@ export class RecorderService {
         }
       }
 
-      // Capture 15 FPS stream from recording canvas
       this.recStream = this.recCanvas.captureStream(15);
       this.recordedChunks = [];
 
@@ -161,14 +153,22 @@ export class RecorderService {
           this.handleRecordingStopped();
         };
 
-        // Start MediaRecorder cleanly from t=0
-        this.mediaRecorder.start(200); // collect chunk slices every 200ms
+        this.mediaRecorder.start(200);
+
+        // Handle Fixed Duration Target (e.g., 2:30 min = 150 seconds)
+        if (typeof this.videoDurationTarget === 'number' && this.videoDurationTarget > 0) {
+          if (this.fixedDurationTimer) clearTimeout(this.fixedDurationTimer);
+          this.fixedDurationTimer = setTimeout(() => {
+            this.finishActivityRecording();
+          }, this.videoDurationTarget * 1000);
+        }
 
         if (this.onActivityStart) {
           this.onActivityStart({
             timestamp: this.activityStartTime,
             hasPreRoll: true,
             preRollSeconds: 3,
+            targetDuration: this.videoDurationTarget,
             mimeType: this.mimeType,
             fileExtension: this.fileExtension,
             ...metadata
@@ -185,10 +185,13 @@ export class RecorderService {
   onHumanLeft() {
     if (!this.isMonitoring || !this.isRecordingActivity) return;
 
-    // If tail timer is already set, let it run
+    // In fixed duration mode (e.g. 2:30 min), keep recording until target duration completes
+    if (typeof this.videoDurationTarget === 'number' && this.videoDurationTarget > 0) {
+      return;
+    }
+
     if (this.tailTimer) return;
 
-    // Schedule recording wrap-up after 2.5s tail
     this.tailTimer = setTimeout(() => {
       this.finishActivityRecording();
     }, this.TAIL_DURATION_MS);
@@ -197,13 +200,19 @@ export class RecorderService {
   finishActivityRecording() {
     if (!this.isRecordingActivity) return;
 
-    this.tailTimer = null;
+    if (this.tailTimer) {
+      clearTimeout(this.tailTimer);
+      this.tailTimer = null;
+    }
+    if (this.fixedDurationTimer) {
+      clearTimeout(this.fixedDurationTimer);
+      this.fixedDurationTimer = null;
+    }
 
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       try {
         this.mediaRecorder.stop();
       } catch (e) {
-        console.error('Error stopping MediaRecorder:', e);
         this.handleRecordingStopped();
       }
     } else {
@@ -218,11 +227,9 @@ export class RecorderService {
     const endTime = Date.now();
     const durationSeconds = Math.max(1.0, (endTime - (this.activityStartTime || endTime)) / 1000);
 
-    // Create final spec-compliant Blob
     const videoBlob = new Blob(this.recordedChunks, { type: this.mimeType });
     const metaCopy = { ...this.activityMetadata };
 
-    // Stop recording stream tracks
     if (this.recStream) {
       this.recStream.getTracks().forEach(track => track.stop());
       this.recStream = null;
@@ -251,6 +258,10 @@ export class RecorderService {
     if (this.tailTimer) {
       clearTimeout(this.tailTimer);
       this.tailTimer = null;
+    }
+    if (this.fixedDurationTimer) {
+      clearTimeout(this.fixedDurationTimer);
+      this.fixedDurationTimer = null;
     }
 
     if (this.isRecordingActivity) {

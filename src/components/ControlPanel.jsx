@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, Square, RefreshCw, Sliders, ShieldCheck, Download, Camera, Video, Monitor } from 'lucide-react';
+import { Play, Square, RefreshCw, Sliders, ShieldCheck, Download, Camera, Video, Monitor, Cloud, Clock } from 'lucide-react';
 
 export default function ControlPanel({
   isMonitoring,
@@ -14,8 +14,12 @@ export default function ControlPanel({
   onChangeFacingMode,
   burstPhotoCount,
   onChangeBurstCount,
+  videoDurationTarget,
+  onChangeVideoDurationTarget,
   autoDownload,
   onToggleAutoDownload,
+  isDriveSyncEnabled,
+  onOpenDriveModal,
   onManualSnapshot
 }) {
   return (
@@ -26,7 +30,7 @@ export default function ControlPanel({
           <h2 className="text-base font-bold text-slate-100 uppercase tracking-wide flex items-center gap-2">
             <Sliders className="w-5 h-5 text-emerald-400" /> Control & Sensitivity Settings
           </h2>
-          <p className="text-xs text-slate-400 font-mono">Configure AI detector & recording triggers</p>
+          <p className="text-xs text-slate-400 font-mono">Configure AI detector, video duration & cloud sync</p>
         </div>
 
         {/* Start / Stop Monitoring Master Switch */}
@@ -107,45 +111,12 @@ export default function ControlPanel({
           </div>
         </div>
 
-        {/* Camera Selector (Front / Rear) */}
+        {/* Photo Burst Quantity & Unlimited Mode */}
         <div className="space-y-1.5">
           <label className="text-xs font-mono text-slate-300 font-semibold flex items-center gap-1.5">
-            <Camera className="w-4 h-4 text-cyan-400" /> Camera Source
+            <Camera className="w-4 h-4 text-emerald-400" /> Photo Mode
           </label>
-          <select
-            value={facingMode}
-            onChange={(e) => onChangeFacingMode(e.target.value)}
-            disabled={isMonitoring}
-            className="w-full bg-slate-900 border border-surveillance-border rounded-lg px-3 py-2 text-slate-200 text-xs font-mono focus:outline-none focus:border-cyan-500 disabled:opacity-50"
-          >
-            <option value="user">Front Camera (Selfie / Laptop)</option>
-            <option value="environment">Rear Camera (Mobile Surveillance)</option>
-          </select>
-        </div>
-
-        {/* Camera Resolution */}
-        <div className="space-y-1.5">
-          <label className="text-xs font-mono text-slate-300 font-semibold flex items-center gap-1.5">
-            <Monitor className="w-4 h-4 text-purple-400" /> Stream Resolution
-          </label>
-          <select
-            value={resolution}
-            onChange={(e) => onChangeResolution(e.target.value)}
-            disabled={isMonitoring}
-            className="w-full bg-slate-900 border border-surveillance-border rounded-lg px-3 py-2 text-slate-200 text-xs font-mono focus:outline-none focus:border-purple-500 disabled:opacity-50"
-          >
-            <option value="720p">720p HD (1280 x 720) - Fast AI</option>
-            <option value="1080p">1080p Full HD (1920 x 1080) - Sharp</option>
-            <option value="480p">480p SD (640 x 480) - Low Power</option>
-          </select>
-        </div>
-
-        {/* Photo Burst Count */}
-        <div className="space-y-1.5">
-          <label className="text-xs font-mono text-slate-300 font-semibold flex items-center gap-1.5">
-            <Video className="w-4 h-4 text-emerald-400" /> Photo Burst Quantity
-          </label>
-          <div className="grid grid-cols-2 gap-2 font-mono text-xs">
+          <div className="grid grid-cols-3 gap-1.5 font-mono text-[11px]">
             <button
               onClick={() => onChangeBurstCount(3)}
               className={`py-2 rounded border transition ${
@@ -154,7 +125,7 @@ export default function ControlPanel({
                   : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
               }`}
             >
-              3 Photos Burst
+              3 Photos
             </button>
             <button
               onClick={() => onChangeBurstCount(4)}
@@ -164,13 +135,105 @@ export default function ControlPanel({
                   : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
               }`}
             >
-              4 Photos Burst
+              4 Photos
+            </button>
+            <button
+              onClick={() => onChangeBurstCount('unlimited')}
+              className={`py-2 rounded border transition ${
+                burstPhotoCount === 'unlimited'
+                  ? 'bg-emerald-950 border-emerald-400 text-emerald-300 font-bold ring-1 ring-emerald-400/50'
+                  : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              ∞ Unlimited
             </button>
           </div>
         </div>
 
-        {/* Auto-Download Toggle & Manual Snapshot */}
-        <div className="space-y-2 flex flex-col justify-end">
+        {/* Video Duration Mode (Auto vs 2:30 Min Fixed) */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-mono text-slate-300 font-semibold flex items-center gap-1.5">
+            <Video className="w-4 h-4 text-cyan-400" /> Video Duration Target
+          </label>
+          <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
+            <button
+              onClick={() => onChangeVideoDurationTarget('auto')}
+              className={`py-2 px-2 rounded border transition ${
+                videoDurationTarget === 'auto'
+                  ? 'bg-cyan-950 border-cyan-500 text-cyan-400 font-bold'
+                  : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Auto (Person Leaves)
+            </button>
+            <button
+              onClick={() => onChangeVideoDurationTarget(150)}
+              className={`py-2 px-2 rounded border transition ${
+                videoDurationTarget === 150
+                  ? 'bg-cyan-950 border-cyan-400 text-cyan-300 font-bold ring-1 ring-cyan-400/50'
+                  : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              2:30 Min (150s Fixed)
+            </button>
+          </div>
+        </div>
+
+        {/* Camera Selector */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-mono text-slate-300 font-semibold flex items-center gap-1.5">
+            <Camera className="w-4 h-4 text-purple-400" /> Camera Source
+          </label>
+          <select
+            value={facingMode}
+            onChange={(e) => onChangeFacingMode(e.target.value)}
+            disabled={isMonitoring}
+            className="w-full bg-slate-900 border border-surveillance-border rounded-lg px-3 py-2 text-slate-200 text-xs font-mono focus:outline-none focus:border-purple-500 disabled:opacity-50"
+          >
+            <option value="user">Front Camera (Selfie / Laptop)</option>
+            <option value="environment">Rear Camera (Mobile Surveillance)</option>
+          </select>
+        </div>
+
+        {/* Camera Resolution */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-mono text-slate-300 font-semibold flex items-center gap-1.5">
+            <Monitor className="w-4 h-4 text-amber-400" /> Stream Resolution
+          </label>
+          <select
+            value={resolution}
+            onChange={(e) => onChangeResolution(e.target.value)}
+            disabled={isMonitoring}
+            className="w-full bg-slate-900 border border-surveillance-border rounded-lg px-3 py-2 text-slate-200 text-xs font-mono focus:outline-none focus:border-amber-500 disabled:opacity-50"
+          >
+            <option value="720p">720p HD (1280 x 720) - Fast AI</option>
+            <option value="1080p">1080p Full HD (1920 x 1080) - Sharp</option>
+            <option value="480p">480p SD (640 x 480) - Low Power</option>
+          </select>
+        </div>
+
+        {/* Google Drive & Local Storage Controls */}
+        <div className="space-y-2 md:col-span-2 pt-2 border-t border-surveillance-border grid grid-cols-1 sm:grid-cols-3 gap-3">
+          
+          {/* Google Drive Setup Launcher */}
+          <button
+            onClick={onOpenDriveModal}
+            className={`p-2.5 rounded border font-mono text-xs flex items-center justify-between transition ${
+              isDriveSyncEnabled
+                ? 'bg-cyan-950/80 border-cyan-500/50 text-cyan-300'
+                : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+            }`}
+          >
+            <div className="flex items-center space-x-2">
+              <Cloud className="w-4 h-4 text-cyan-400" />
+              <span className="font-bold">Google Drive Sync</span>
+            </div>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 font-bold uppercase">
+              {isDriveSyncEnabled ? 'ACTIVE' : 'SETUP'}
+            </span>
+          </button>
+
+          {/* Local Auto-Download */}
           <div className="flex items-center justify-between p-2.5 rounded bg-slate-900 border border-slate-800">
             <div className="flex items-center space-x-2">
               <Download className="w-4 h-4 text-emerald-400" />
@@ -187,6 +250,7 @@ export default function ControlPanel({
             </label>
           </div>
 
+          {/* Manual Snapshot */}
           <button
             onClick={onManualSnapshot}
             disabled={!isMonitoring}

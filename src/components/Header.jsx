@@ -1,12 +1,14 @@
 import React from 'react';
-import { Camera, Shield, Cpu, HardDrive, CircleDot } from 'lucide-react';
+import { Camera, Shield, Cpu, HardDrive, CircleDot, Cloud } from 'lucide-react';
 
 export default function Header({ 
   isMonitoring, 
   isModelLoaded, 
   isRecording, 
   peopleCount, 
-  storageStats 
+  storageStats,
+  isDriveSyncEnabled,
+  onOpenDriveModal
 }) {
   return (
     <header className="bg-surveillance-panel border-b border-surveillance-border px-4 py-3 text-white flex flex-wrap items-center justify-between gap-4">
@@ -17,16 +19,30 @@ export default function Header({
         </div>
         <div>
           <h1 className="text-lg font-bold tracking-wider uppercase text-slate-100 flex items-center gap-2">
-            Smart Camera Surveillance <span className="text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded font-mono">v1.0 AI</span>
+            Smart Camera Surveillance <span className="text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded font-mono">v1.1 AI</span>
           </h1>
           <p className="text-xs text-slate-400 font-mono">
-            Browser AI Human Detection • 3s Pre-Roll Video Buffer • IndexedDB Store
+            Browser AI Human Detection • 3s Pre-Roll • Google Drive Sync • Unlimited Photo Mode
           </p>
         </div>
       </div>
 
       {/* System Status Indicators */}
       <div className="flex items-center space-x-3 text-xs font-mono">
+        {/* Google Drive Status Button */}
+        <button
+          onClick={onOpenDriveModal}
+          className={`px-3 py-1.5 rounded-full border flex items-center space-x-1.5 transition ${
+            isDriveSyncEnabled
+              ? 'bg-cyan-950/90 border-cyan-500/50 text-cyan-400 hover:bg-cyan-900/90'
+              : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+          }`}
+          title="Google Drive Cloud Sync Setup"
+        >
+          <Cloud className={`w-3.5 h-3.5 ${isDriveSyncEnabled ? 'text-cyan-400 animate-pulse' : ''}`} />
+          <span className="font-semibold">{isDriveSyncEnabled ? 'GDrive Sync ON' : 'GDrive Setup'}</span>
+        </button>
+
         {/* Monitoring Status Badge */}
         <div className={`px-3 py-1.5 rounded-full border flex items-center space-x-2 ${
           isMonitoring 

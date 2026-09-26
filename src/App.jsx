@@ -4,9 +4,11 @@ import CameraFeed from './components/CameraFeed';
 import ControlPanel from './components/ControlPanel';
 import ActivityLog from './components/ActivityLog';
 import Gallery from './components/Gallery';
+import DriveModal from './components/DriveModal';
 import { detectorService } from './services/detectorService';
 import { recorderService } from './services/recorderService';
 import { storageService } from './services/storageService';
+import { driveService } from './services/driveService';
 
 export default function App() {
   // --- States ---
@@ -21,8 +23,13 @@ export default function App() {
   const [cooldownPeriod, setCooldownPeriod] = useState(10); // 10s
   const [facingMode, setFacingMode] = useState('user'); // 'user' | 'environment'
   const [resolution, setResolution] = useState('720p'); // '720p' | '1080p'
-  const [burstPhotoCount, setBurstPhotoCount] = useState(4); // 3 or 4 photos
+  const [burstPhotoCount, setBurstPhotoCount] = useState(4); // 3, 4, or 'unlimited'
+  const [videoDurationTarget, setVideoDurationTarget] = useState('auto'); // 'auto' or 150 (2:30 min)
   const [autoDownload, setAutoDownload] = useState(true);
+
+  // Google Drive Cloud Sync State
+  const [isDriveSyncEnabled, setIsDriveSyncEnabled] = useState(driveService.isEnabled);
+  const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
 
   // Runtime Stats
   const [peopleCount, setPeopleCount] = useState(0);
@@ -41,6 +48,7 @@ export default function App() {
   const lastDetectionTimeRef = useRef(0);
   const cooldownTimerRef = useRef(null);
   const isProcessingBurstRef = useRef(false);
+  const lastUnlimitedPhotoTimeRef = useRef(0);
 
   // Load IndexedDB items on mount & load AI Model
   useEffect(() => {
@@ -52,7 +60,7 @@ export default function App() {
         setIsModelLoaded(true);
         await storageService.addLog({
           type: 'system',
-          message: 'System initialized. COCO-SSD AI detector ready.'
+          message: 'System initialized. COCO-SSD AI detector & Google Drive Sync ready.'
         });
         await refreshGalleryAndLogs();
       } catch (err) {
@@ -77,9 +85,15 @@ export default function App() {
       setVideos(allVideos);
       setLogs(allLogs);
       setStorageStats(stats);
+      setIsDriveSyncEnabled(driveService.isEnabled);
     } catch (e) {
       console.error('Error refreshing storage data:', e);
     }
+  };
+
+  const handleVideoDurationTargetChange = (target) => {
+    setVideoDurationTarget(target);
+    recorderService.setVideoDurationTarget(target);
   };
 
   // --- Camera Access ---
@@ -111,13 +125,15 @@ export default function App() {
       setPermissionGranted(true);
       setIsMonitoring(true);
 
-      // Initialize Video Recorder with 3s Pre-roll Ring Buffer
+      // Initialize Video Recorder
+      recorderService.setVideoDurationTarget(videoDurationTarget);
       recorderService.startMonitoring({
         onActivityStart: (info) => {
           setIsRecording(true);
+          const durationLabel = info.targetDuration === 150 ? '2:30 min fixed target' : 'auto duration';
           storageService.addLog({
             type: 'recording_start',
-            message: `Started activity recording (with 3s pre-roll buffer)`,
+            message: `Started activity recording (with 3s pre-roll buffer, ${durationLabel})`,
             meta: info
           }).then(refreshGalleryAndLogs);
         },
@@ -138,8 +154,25 @@ export default function App() {
             meta: { filename: savedVid.filename, duration: result.duration.toFixed(1) }
           });
 
+          // Local Auto-Download
           if (autoDownload) {
             storageService.downloadBlob(result.blob, savedVid.filename);
+          }
+
+          // Google Drive Automatic Cloud Upload
+          if (driveService.isEnabled && driveService.webhookUrl) {
+            driveService.uploadFile({
+              blob: result.blob,
+              filename: savedVid.filename,
+              mimeType: result.mimeType
+            }).then((driveRes) => {
+              if (driveRes.success) {
+                storageService.addLog({
+                  type: 'system',
+                  message: `Uploaded ${savedVid.filename} to Google Drive folder 1XOOsBa34u3CQxWH4t8C8xCADWrOIfUYo`
+                }).then(refreshGalleryAndLogs);
+              }
+            });
           }
 
           refreshGalleryAndLogs();
@@ -221,24 +254,35 @@ export default function App() {
           );
 
           if (result.hasHuman) {
-            // Signal recorder service that a human is in frame
             const maxConfidence = Math.max(...result.people.map(p => p.score));
+            
+            // Signal recorder service that a human is in frame
             recorderService.onHumanDetected(videoRef.current, {
               confidence: maxConfidence,
               peopleCount: result.count
             });
 
-            // Trigger Photo Burst if NOT in cooldown
+            // Handle Photo Capture Modes (3, 4, or Unlimited Continuous)
             const now = Date.now();
-            if (
-              !isProcessingBurstRef.current &&
-              (now - lastDetectionTimeRef.current > cooldownPeriod * 1000)
-            ) {
-              lastDetectionTimeRef.current = now;
-              triggerPhotoBurstSequence(maxConfidence, result.count);
+
+            if (burstPhotoCount === 'unlimited') {
+              // Unlimited Mode: Capture 1 photo every 500ms continuously while person is detected
+              if (now - lastUnlimitedPhotoTimeRef.current >= 500) {
+                lastUnlimitedPhotoTimeRef.current = now;
+                captureSinglePhoto(maxConfidence, result.count);
+              }
+            } else {
+              // Standard Burst Mode (3 or 4 photos) with Cooldown
+              if (
+                !isProcessingBurstRef.current &&
+                (now - lastDetectionTimeRef.current > cooldownPeriod * 1000)
+              ) {
+                lastDetectionTimeRef.current = now;
+                triggerPhotoBurstSequence(maxConfidence, result.count);
+              }
             }
           } else {
-            // Signal recorder service that human left scene (will trigger 2.5s tail wrap-up)
+            // Signal recorder service that human left scene
             recorderService.onHumanLeft();
           }
         } catch (e) {
@@ -252,23 +296,50 @@ export default function App() {
     animFrameRef.current = requestAnimationFrame(loop);
   };
 
+  // --- Single Photo Capture (for Unlimited Mode) ---
+  const captureSinglePhoto = async (confidence, count) => {
+    const photoArr = await detectorService.capturePhotoBurst(videoRef.current, 1, 0, confidence, count);
+    if (photoArr.length > 0) {
+      const p = photoArr[0];
+      const saved = await storageService.savePhoto({
+        blob: p.blob,
+        dataUrl: p.dataUrl,
+        confidence: p.confidence,
+        peopleCount: p.peopleCount,
+        index: Date.now() % 1000,
+        timestamp: p.timestamp
+      });
+
+      if (autoDownload) {
+        storageService.downloadDataUrl(p.dataUrl, saved.filename);
+      }
+
+      if (driveService.isEnabled && driveService.webhookUrl) {
+        driveService.uploadFile({
+          dataUrl: p.dataUrl,
+          filename: saved.filename,
+          mimeType: 'image/jpeg'
+        });
+      }
+
+      refreshGalleryAndLogs();
+    }
+  };
+
   // --- Photo Burst Capture Handler ---
   const triggerPhotoBurstSequence = async (confidence, count) => {
     isProcessingBurstRef.current = true;
-
-    // Start UI Cooldown Countdown
     startCooldownTimer(cooldownPeriod);
 
-    // Capture 3-4 consecutive photos spaced ~350ms apart
+    const countToCapture = typeof burstPhotoCount === 'number' ? burstPhotoCount : 4;
     const photosCaptured = await detectorService.capturePhotoBurst(
       videoRef.current,
-      burstPhotoCount,
+      countToCapture,
       350,
       confidence,
       count
     );
 
-    // Save all captured photos to IndexedDB
     for (const p of photosCaptured) {
       const savedPhoto = await storageService.savePhoto({
         blob: p.blob,
@@ -281,6 +352,15 @@ export default function App() {
 
       if (autoDownload) {
         storageService.downloadDataUrl(p.dataUrl, savedPhoto.filename);
+      }
+
+      // Google Drive Cloud Upload
+      if (driveService.isEnabled && driveService.webhookUrl) {
+        driveService.uploadFile({
+          dataUrl: p.dataUrl,
+          filename: savedPhoto.filename,
+          mimeType: 'image/jpeg'
+        });
       }
     }
 
@@ -371,6 +451,8 @@ export default function App() {
         isRecording={isRecording}
         peopleCount={peopleCount}
         storageStats={storageStats}
+        isDriveSyncEnabled={isDriveSyncEnabled}
+        onOpenDriveModal={() => setIsDriveModalOpen(true)}
       />
 
       {/* Main Command Center Layout */}
@@ -411,8 +493,12 @@ export default function App() {
               onChangeFacingMode={(f) => { setFacingMode(f); stopCameraAndMonitoring(); }}
               burstPhotoCount={burstPhotoCount}
               onChangeBurstCount={setBurstPhotoCount}
+              videoDurationTarget={videoDurationTarget}
+              onChangeVideoDurationTarget={handleVideoDurationTargetChange}
               autoDownload={autoDownload}
               onToggleAutoDownload={setAutoDownload}
+              isDriveSyncEnabled={isDriveSyncEnabled}
+              onOpenDriveModal={() => setIsDriveModalOpen(true)}
               onManualSnapshot={handleManualSnapshot}
             />
           </div>
@@ -442,9 +528,16 @@ export default function App() {
 
       </main>
 
+      {/* Google Drive Setup Modal */}
+      <DriveModal
+        isOpen={isDriveModalOpen}
+        onClose={() => setIsDriveModalOpen(false)}
+        onSave={() => refreshGalleryAndLogs()}
+      />
+
       {/* Footer */}
       <footer className="border-t border-surveillance-border bg-surveillance-panel py-3 px-4 text-center text-xs text-slate-500 font-mono">
-        Smart Camera Surveillance Web App • Powered by TensorFlow.js, HTML5 MediaRecorder & IndexedDB
+        Smart Camera Surveillance Web App • Powered by TensorFlow.js, MediaRecorder & Google Drive Sync
       </footer>
     </div>
   );
