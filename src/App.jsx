@@ -128,7 +128,7 @@ export default function App() {
 
       // Initialize Video Recorder
       recorderService.setVideoDurationTarget(videoDurationTarget);
-      recorderService.startMonitoring({
+      recorderService.startMonitoring(stream, {
         onActivityStart: (info) => {
           setIsRecording(true);
           const durationLabel = info.targetDuration === 150 ? '2:30 min fixed target' : 'auto duration';

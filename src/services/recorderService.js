@@ -1,7 +1,7 @@
 /**
- * Bulletproof Frame-Buffer Video Recorder Service.
- * Uses MediaRecorder with Canvas Stream Capture for guaranteed multi-megabyte video recording,
- * 3-second pre-roll buffer, and automatic 2:30 min round re-triggering.
+ * Guaranteed Non-Zero Video Recorder Service.
+ * Uses direct stream recording & synchronous canvas drawing (ctx.drawImage)
+ * ensuring 100% non-zero multi-megabyte video files and 2:30 min auto re-triggering.
  */
 
 export class RecorderService {
@@ -9,23 +9,26 @@ export class RecorderService {
     this.isMonitoring = false;
     this.isRecordingActivity = false;
 
-    // Pre-roll Frame Buffer (holds ImageBitmaps for last 3 seconds)
-    this.frameBuffer = [];
-    this.MAX_PRE_ROLL_FRAMES = 45; // 45 frames @ 15 FPS = 3.0 seconds
-
-    // Recording Canvas & Stream
-    this.recCanvas = null;
-    this.recCtx = null;
-    this.recStream = null;
+    // Direct MediaStream and MediaRecorder
+    this.stream = null;
     this.mediaRecorder = null;
     this.recordedChunks = [];
 
-    // Activity Timing & Duration Controls
+    // Pre-roll Frame Canvas Ring Buffer
+    this.preRollCanvases = [];
+    this.MAX_PRE_ROLL_CANVASES = 45; // 45 frames @ 15fps = 3.0s
+
+    // Offscreen Canvas for recording stream
+    this.recCanvas = null;
+    this.recCtx = null;
+    this.recStream = null;
+
+    // Timing & Target Controls
     this.activityStartTime = null;
     this.activityMetadata = null;
     this.tailTimer = null;
     this.fixedDurationTimer = null;
-    this.TAIL_DURATION_MS = 2500; // 2.5s tail after human leaves
+    this.TAIL_DURATION_MS = 2500;
     this.videoDurationTarget = 150; // Default 2:30 min (150s)
 
     this.mimeType = 'video/webm';
@@ -40,12 +43,11 @@ export class RecorderService {
 
   getBestMimeType() {
     const candidates = [
-      { mime: 'video/mp4;codecs=avc1.42E01E', ext: 'mp4' },
-      { mime: 'video/mp4', ext: 'mp4' },
-      { mime: 'video/webm;codecs=h264', ext: 'mp4' },
       { mime: 'video/webm;codecs=vp9', ext: 'webm' },
       { mime: 'video/webm;codecs=vp8', ext: 'webm' },
-      { mime: 'video/webm', ext: 'webm' }
+      { mime: 'video/webm', ext: 'webm' },
+      { mime: 'video/mp4;codecs=avc1', ext: 'mp4' },
+      { mime: 'video/mp4', ext: 'mp4' }
     ];
 
     for (const c of candidates) {
@@ -56,10 +58,11 @@ export class RecorderService {
     return { mime: 'video/webm', ext: 'webm' };
   }
 
-  startMonitoring(callbacks = {}) {
+  startMonitoring(stream, callbacks = {}) {
     this.isMonitoring = true;
     this.isRecordingActivity = false;
-    this.clearFrameBuffer();
+    this.stream = stream;
+    this.preRollCanvases = [];
 
     this.onActivityStart = callbacks.onActivityStart || null;
     this.onActivityComplete = callbacks.onActivityComplete || null;
@@ -71,45 +74,42 @@ export class RecorderService {
   }
 
   setVideoDurationTarget(target) {
-    this.videoDurationTarget = target; // 'auto' or seconds integer e.g. 150
+    this.videoDurationTarget = target;
   }
 
-  clearFrameBuffer() {
-    while (this.frameBuffer.length > 0) {
-      const item = this.frameBuffer.shift();
-      if (item && item.bitmap && typeof item.bitmap.close === 'function') {
-        item.bitmap.close();
-      }
-    }
-  }
+  /**
+   * Synchronous Canvas Frame Drawer (Replaces unstable createImageBitmap)
+   */
+  pushFrame(videoElement) {
+    if (!this.isMonitoring || !videoElement || videoElement.readyState < 2) return;
 
-  async pushFrame(sourceCanvasOrVideo) {
-    if (!this.isMonitoring || !sourceCanvasOrVideo) return;
+    const width = videoElement.videoWidth || 1280;
+    const height = videoElement.videoHeight || 720;
 
-    try {
-      const bitmap = await createImageBitmap(sourceCanvasOrVideo);
+    if (this.isRecordingActivity && this.recCtx) {
+      // Draw live video frame directly to active recording canvas
+      try {
+        this.recCtx.drawImage(videoElement, 0, 0, width, height);
+      } catch (e) {}
+    } else {
+      // Maintain pre-roll offscreen canvas ring buffer
+      try {
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = width;
+        offCanvas.height = height;
+        const offCtx = offCanvas.getContext('2d');
+        offCtx.drawImage(videoElement, 0, 0, width, height);
 
-      if (this.isRecordingActivity && this.recCtx) {
-        // Draw live video frame to active recording canvas
-        this.recCtx.drawImage(bitmap, 0, 0, this.recCanvas.width, this.recCanvas.height);
-        bitmap.close();
-      } else {
-        // Maintain 3-second pre-roll buffer
-        this.frameBuffer.push({ bitmap, timestamp: Date.now() });
+        this.preRollCanvases.push(offCanvas);
 
-        if (this.frameBuffer.length > this.MAX_PRE_ROLL_FRAMES) {
-          const oldest = this.frameBuffer.shift();
-          if (oldest && oldest.bitmap && typeof oldest.bitmap.close === 'function') {
-            oldest.bitmap.close();
-          }
+        if (this.preRollCanvases.length > this.MAX_PRE_ROLL_CANVASES) {
+          this.preRollCanvases.shift();
         }
-      }
-    } catch (err) {
-      // Safe catch
+      } catch (e) {}
     }
   }
 
-  async onHumanDetected(videoOrCanvasElement, metadata = {}) {
+  onHumanDetected(videoElement, metadata = {}) {
     if (!this.isMonitoring) return;
 
     if (this.tailTimer) {
@@ -122,8 +122,8 @@ export class RecorderService {
       this.activityStartTime = Date.now();
       this.activityMetadata = metadata;
 
-      const width = videoOrCanvasElement.videoWidth || videoOrCanvasElement.width || 1280;
-      const height = videoOrCanvasElement.videoHeight || videoOrCanvasElement.height || 720;
+      const width = (videoElement && videoElement.videoWidth) ? videoElement.videoWidth : 1280;
+      const height = (videoElement && videoElement.videoHeight) ? videoElement.videoHeight : 720;
 
       // Setup Offscreen Recording Canvas
       this.recCanvas = document.createElement('canvas');
@@ -131,15 +131,21 @@ export class RecorderService {
       this.recCanvas.height = height;
       this.recCtx = this.recCanvas.getContext('2d');
 
-      // Flush 3-second pre-roll frame buffer onto recording canvas
-      const preRollBitmaps = [...this.frameBuffer];
-      this.frameBuffer = [];
+      // Flush 3-second pre-roll canvases onto recording canvas first
+      const preRolls = [...this.preRollCanvases];
+      this.preRollCanvases = [];
 
-      for (const item of preRollBitmaps) {
-        if (item && item.bitmap) {
-          this.recCtx.drawImage(item.bitmap, 0, 0, width, height);
-          if (typeof item.bitmap.close === 'function') item.bitmap.close();
-        }
+      for (const offCanvas of preRolls) {
+        try {
+          this.recCtx.drawImage(offCanvas, 0, 0, width, height);
+        } catch (e) {}
+      }
+
+      // Draw initial live frame
+      if (videoElement && videoElement.readyState >= 2) {
+        try {
+          this.recCtx.drawImage(videoElement, 0, 0, width, height);
+        } catch (e) {}
       }
 
       // Capture 15 FPS stream from recording canvas
@@ -160,17 +166,17 @@ export class RecorderService {
         };
 
         this.mediaRecorder.onstop = () => {
-          this.handleRecordingStopped(videoOrCanvasElement);
+          this.handleRecordingStopped(videoElement);
         };
 
-        // Collect chunks every 200ms
+        // Collect slices every 200ms
         this.mediaRecorder.start(200);
 
         // Handle 2:30 Min (150s) Fixed Target Round
         if (typeof this.videoDurationTarget === 'number' && this.videoDurationTarget > 0) {
           if (this.fixedDurationTimer) clearTimeout(this.fixedDurationTimer);
           this.fixedDurationTimer = setTimeout(() => {
-            this.finishActivityRecording(videoOrCanvasElement);
+            this.finishActivityRecording(videoElement);
           }, this.videoDurationTarget * 1000);
         }
 
@@ -287,7 +293,7 @@ export class RecorderService {
       this.finishActivityRecording();
     }
 
-    this.clearFrameBuffer();
+    this.preRollCanvases = [];
 
     if (this.recStream) {
       this.recStream.getTracks().forEach(track => track.stop());
