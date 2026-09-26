@@ -283,11 +283,19 @@ class StorageService {
   }
 
   downloadBlob(blob, filename) {
+    let safeFilename = filename;
+    if (blob && blob.type) {
+      if (blob.type.includes('mp4') && !safeFilename.endsWith('.mp4')) {
+        safeFilename = safeFilename.replace(/(\.[^/.]+$)|$/, '.mp4');
+      } else if (blob.type.includes('webm') && !safeFilename.endsWith('.webm')) {
+        safeFilename = safeFilename.replace(/(\.[^/.]+$)|$/, '.webm');
+      }
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.style.display = 'none';
     a.href = url;
-    a.download = filename;
+    a.download = safeFilename;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => {
