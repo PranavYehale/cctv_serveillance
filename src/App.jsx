@@ -185,6 +185,21 @@ export default function App() {
         }
       });
 
+      recorderService.onCheckReTrigger = async (videoEl) => {
+        if (!videoEl || videoEl.readyState < 2) return;
+        try {
+          const res = await detectorService.detect(videoEl, confidenceThreshold);
+          if (res.hasHuman) {
+            const maxConf = Math.max(...res.people.map(p => p.score));
+            storageService.addLog({
+              type: 'system',
+              message: `Person still detected after round completion → Starting next 2:30 min MP4 recording round`
+            }).then(refreshGalleryAndLogs);
+            recorderService.onHumanDetected(videoEl, { confidence: maxConf, peopleCount: res.count });
+          }
+        } catch (e) {}
+      };
+
       startDetectionLoop();
     } catch (err) {
       console.error('Camera permission failed:', err);
