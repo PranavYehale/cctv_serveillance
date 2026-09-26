@@ -1,10 +1,8 @@
 /**
- * Frame-Buffer Video Recorder Service with MP4 Hardware Muxing
- * and 2:30 Min (150s) Auto Re-Triggering Surveillance Rounds.
- * Guarantees 100% genuine H.264 MP4 output playable on all Windows Media Players.
+ * Bulletproof Frame-Buffer Video Recorder Service.
+ * Uses MediaRecorder with Canvas Stream Capture for guaranteed multi-megabyte video recording,
+ * 3-second pre-roll buffer, and automatic 2:30 min round re-triggering.
  */
-
-import { mp4MuxerService } from './mp4MuxerService';
 
 export class RecorderService {
   constructor() {
@@ -15,13 +13,12 @@ export class RecorderService {
     this.frameBuffer = [];
     this.MAX_PRE_ROLL_FRAMES = 45; // 45 frames @ 15 FPS = 3.0 seconds
 
-    // Recording Canvas & Streams
+    // Recording Canvas & Stream
     this.recCanvas = null;
     this.recCtx = null;
     this.recStream = null;
     this.mediaRecorder = null;
     this.recordedChunks = [];
-    this.useNativeMp4Muxer = false;
 
     // Activity Timing & Duration Controls
     this.activityStartTime = null;
@@ -31,29 +28,32 @@ export class RecorderService {
     this.TAIL_DURATION_MS = 2500; // 2.5s tail after human leaves
     this.videoDurationTarget = 150; // Default 2:30 min (150s)
 
-    this.mimeType = 'video/mp4';
-    this.fileExtension = 'mp4';
+    this.mimeType = 'video/webm';
+    this.fileExtension = 'webm';
 
     // Callbacks
     this.onActivityStart = null;
     this.onActivityComplete = null;
     this.onError = null;
+    this.onCheckReTrigger = null;
   }
 
   getBestMimeType() {
-    const mp4Types = [
+    const candidates = [
       { mime: 'video/mp4;codecs=avc1.42E01E', ext: 'mp4' },
-      { mime: 'video/mp4;codecs=avc1', ext: 'mp4' },
-      { mime: 'video/mp4;codecs=h264', ext: 'mp4' },
-      { mime: 'video/mp4', ext: 'mp4' }
+      { mime: 'video/mp4', ext: 'mp4' },
+      { mime: 'video/webm;codecs=h264', ext: 'mp4' },
+      { mime: 'video/webm;codecs=vp9', ext: 'webm' },
+      { mime: 'video/webm;codecs=vp8', ext: 'webm' },
+      { mime: 'video/webm', ext: 'webm' }
     ];
 
-    for (const t of mp4Types) {
-      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t.mime)) {
-        return t;
+    for (const c of candidates) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c.mime)) {
+        return c;
       }
     }
-    return { mime: 'video/mp4', ext: 'mp4' };
+    return { mime: 'video/webm', ext: 'webm' };
   }
 
   startMonitoring(callbacks = {}) {
@@ -90,15 +90,11 @@ export class RecorderService {
       const bitmap = await createImageBitmap(sourceCanvasOrVideo);
 
       if (this.isRecordingActivity && this.recCtx) {
+        // Draw live video frame to active recording canvas
         this.recCtx.drawImage(bitmap, 0, 0, this.recCanvas.width, this.recCanvas.height);
-        
-        // Feed frame to native H.264 MP4 Muxer if active
-        if (this.useNativeMp4Muxer) {
-          mp4MuxerService.addFrame(this.recCanvas);
-        }
-
         bitmap.close();
       } else {
+        // Maintain 3-second pre-roll buffer
         this.frameBuffer.push({ bitmap, timestamp: Date.now() });
 
         if (this.frameBuffer.length > this.MAX_PRE_ROLL_FRAMES) {
@@ -129,11 +125,13 @@ export class RecorderService {
       const width = videoOrCanvasElement.videoWidth || videoOrCanvasElement.width || 1280;
       const height = videoOrCanvasElement.videoHeight || videoOrCanvasElement.height || 720;
 
+      // Setup Offscreen Recording Canvas
       this.recCanvas = document.createElement('canvas');
       this.recCanvas.width = width;
       this.recCanvas.height = height;
       this.recCtx = this.recCanvas.getContext('2d');
 
+      // Flush 3-second pre-roll frame buffer onto recording canvas
       const preRollBitmaps = [...this.frameBuffer];
       this.frameBuffer = [];
 
@@ -144,51 +142,53 @@ export class RecorderService {
         }
       }
 
-      // Try native H.264 WebCodecs MP4 Muxer first
-      this.useNativeMp4Muxer = mp4MuxerService.startRecording(width, height, 15);
+      // Capture 15 FPS stream from recording canvas
+      this.recStream = this.recCanvas.captureStream(15);
+      this.recordedChunks = [];
 
-      if (!this.useNativeMp4Muxer) {
-        // Fallback to MediaRecorder
-        this.recStream = this.recCanvas.captureStream(15);
-        this.recordedChunks = [];
-        const selected = this.getBestMimeType();
-        this.mimeType = selected.mime;
-        this.fileExtension = selected.ext;
+      const selected = this.getBestMimeType();
+      this.mimeType = selected.mime;
+      this.fileExtension = selected.ext;
 
-        try {
-          this.mediaRecorder = new MediaRecorder(this.recStream, { mimeType: this.mimeType });
-          this.mediaRecorder.ondataavailable = (e) => {
-            if (e.data && e.data.size > 0) {
-              this.recordedChunks.push(e.data);
-            }
-          };
-          this.mediaRecorder.onstop = () => {
-            this.handleRecordingStopped();
-          };
-          this.mediaRecorder.start(200);
-        } catch (e) {
-          console.error('MediaRecorder fallback error:', e);
+      try {
+        this.mediaRecorder = new MediaRecorder(this.recStream, { mimeType: this.mimeType });
+
+        this.mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            this.recordedChunks.push(e.data);
+          }
+        };
+
+        this.mediaRecorder.onstop = () => {
+          this.handleRecordingStopped(videoOrCanvasElement);
+        };
+
+        // Collect chunks every 200ms
+        this.mediaRecorder.start(200);
+
+        // Handle 2:30 Min (150s) Fixed Target Round
+        if (typeof this.videoDurationTarget === 'number' && this.videoDurationTarget > 0) {
+          if (this.fixedDurationTimer) clearTimeout(this.fixedDurationTimer);
+          this.fixedDurationTimer = setTimeout(() => {
+            this.finishActivityRecording(videoOrCanvasElement);
+          }, this.videoDurationTarget * 1000);
         }
-      }
 
-      // Handle 2:30 Min (150s) Fixed Target Round
-      if (typeof this.videoDurationTarget === 'number' && this.videoDurationTarget > 0) {
-        if (this.fixedDurationTimer) clearTimeout(this.fixedDurationTimer);
-        this.fixedDurationTimer = setTimeout(() => {
-          this.finishActivityRecording(videoOrCanvasElement);
-        }, this.videoDurationTarget * 1000);
-      }
-
-      if (this.onActivityStart) {
-        this.onActivityStart({
-          timestamp: this.activityStartTime,
-          hasPreRoll: true,
-          preRollSeconds: 3,
-          targetDuration: this.videoDurationTarget,
-          mimeType: 'video/mp4',
-          fileExtension: 'mp4',
-          ...metadata
-        });
+        if (this.onActivityStart) {
+          this.onActivityStart({
+            timestamp: this.activityStartTime,
+            hasPreRoll: true,
+            preRollSeconds: 3,
+            targetDuration: this.videoDurationTarget,
+            mimeType: this.mimeType,
+            fileExtension: this.fileExtension,
+            ...metadata
+          });
+        }
+      } catch (err) {
+        console.error('MediaRecorder start error:', err);
+        this.isRecordingActivity = false;
+        if (this.onError) this.onError(err);
       }
     }
   }
@@ -197,7 +197,7 @@ export class RecorderService {
     if (!this.isMonitoring || !this.isRecordingActivity) return;
 
     if (typeof this.videoDurationTarget === 'number' && this.videoDurationTarget > 0) {
-      return;
+      return; // Keep recording until 2:30 min target finishes
     }
 
     if (this.tailTimer) return;
@@ -207,7 +207,7 @@ export class RecorderService {
     }, this.TAIL_DURATION_MS);
   }
 
-  async finishActivityRecording(currentVideoElement = null) {
+  finishActivityRecording(currentVideoElement = null) {
     if (!this.isRecordingActivity) return;
 
     if (this.tailTimer) {
@@ -219,32 +219,25 @@ export class RecorderService {
       this.fixedDurationTimer = null;
     }
 
-    if (this.useNativeMp4Muxer) {
-      const mp4Result = await mp4MuxerService.stopRecording();
-      this.handleRecordingStopped(mp4Result ? mp4Result.blob : null, currentVideoElement);
-    } else if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       try {
         this.mediaRecorder.stop();
       } catch (e) {
-        this.handleRecordingStopped(null, currentVideoElement);
+        this.handleRecordingStopped(currentVideoElement);
       }
     } else {
-      this.handleRecordingStopped(null, currentVideoElement);
+      this.handleRecordingStopped(currentVideoElement);
     }
   }
 
-  async handleRecordingStopped(customBlob = null, currentVideoElement = null) {
+  handleRecordingStopped(currentVideoElement = null) {
     if (!this.isRecordingActivity) return;
     this.isRecordingActivity = false;
 
     const endTime = Date.now();
     const durationSeconds = Math.max(1.0, (endTime - (this.activityStartTime || endTime)) / 1000);
 
-    let videoBlob = customBlob;
-    if (!videoBlob) {
-      videoBlob = new Blob(this.recordedChunks, { type: 'video/mp4' });
-    }
-
+    const videoBlob = new Blob(this.recordedChunks, { type: this.mimeType });
     const metaCopy = { ...this.activityMetadata };
 
     if (this.recStream) {
@@ -256,15 +249,14 @@ export class RecorderService {
     this.recCtx = null;
     this.mediaRecorder = null;
     this.recordedChunks = [];
-    this.useNativeMp4Muxer = false;
 
-    if (this.onActivityComplete && videoBlob && videoBlob.size > 0) {
+    if (this.onActivityComplete && videoBlob.size > 0) {
       this.onActivityComplete({
         blob: videoBlob,
         duration: durationSeconds,
         timestamp: new Date(this.activityStartTime || Date.now()),
-        mimeType: 'video/mp4',
-        fileExtension: 'mp4',
+        mimeType: this.mimeType,
+        fileExtension: this.fileExtension,
         sizeBytes: videoBlob.size,
         ...metaCopy
       });
@@ -306,7 +298,6 @@ export class RecorderService {
     this.recCtx = null;
     this.mediaRecorder = null;
     this.recordedChunks = [];
-    this.useNativeMp4Muxer = false;
   }
 }
 

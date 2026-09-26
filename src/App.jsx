@@ -141,9 +141,8 @@ export default function App() {
         onActivityComplete: async (result) => {
           setIsRecording(false);
           
-          // Convert video to pure MP4
-          const mp4Result = await mp4ConverterService.convertToMp4(result.blob);
-          const finalBlob = mp4Result.blob;
+          const finalBlob = result.blob;
+          const ext = result.fileExtension || (finalBlob.type.includes('mp4') ? 'mp4' : 'webm');
 
           const savedVid = await storageService.saveVideo({
             blob: finalBlob,
@@ -151,12 +150,12 @@ export default function App() {
             confidence: result.confidence || 0.8,
             peopleCount: result.peopleCount || 1,
             timestamp: result.timestamp,
-            fileExtension: 'mp4'
+            fileExtension: ext
           });
 
           await storageService.addLog({
             type: 'recording_stop',
-            message: `Activity recording completed → ${result.duration.toFixed(1)} sec MP4 video saved (${(finalBlob.size / (1024 * 1024)).toFixed(1)} MB)`,
+            message: `Activity recording completed → ${result.duration.toFixed(1)} sec video saved (${(finalBlob.size / (1024 * 1024)).toFixed(1)} MB)`,
             meta: { filename: savedVid.filename, duration: result.duration.toFixed(1) }
           });
 
@@ -170,12 +169,12 @@ export default function App() {
             driveService.uploadFile({
               blob: finalBlob,
               filename: savedVid.filename,
-              mimeType: 'video/mp4'
+              mimeType: finalBlob.type || 'video/webm'
             }).then((driveRes) => {
               if (driveRes.success) {
                 storageService.addLog({
                   type: 'system',
-                  message: `Uploaded ${savedVid.filename} (MP4) to Google Drive folder 1XOOsBa34u3CQxWH4t8C8xCADWrOIfUYo`
+                  message: `Uploaded ${savedVid.filename} to Google Drive folder 1XOOsBa34u3CQxWH4t8C8xCADWrOIfUYo`
                 }).then(refreshGalleryAndLogs);
               }
             });
