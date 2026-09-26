@@ -140,10 +140,14 @@ class StorageService {
   }
 
   // --- Video Operations ---
-  async saveVideo({ blob, duration, confidence, peopleCount, timestamp = new Date(), fileExtension = 'webm' }) {
+  async saveVideo({ blob, duration, confidence, peopleCount, timestamp = new Date(), fileExtension = 'mp4' }) {
     const db = await this.getDB();
     const dateStr = this.formatDateForFilename(timestamp);
-    const ext = fileExtension || (blob && blob.type.includes('mp4') ? 'mp4' : 'webm');
+    let ext = fileExtension;
+    if (blob && blob.type) {
+      if (blob.type.includes('mp4')) ext = 'mp4';
+      else if (blob.type.includes('webm')) ext = 'webm';
+    }
     const filename = `activity_${dateStr}.${ext}`;
 
     const record = {

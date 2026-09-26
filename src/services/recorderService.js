@@ -1,7 +1,7 @@
 /**
- * Frame-Buffer Video Recorder Service with True 3-Second Pre-Roll
- * and Fixed Target Duration Options (e.g. 2:30 Min / 150 Seconds).
- * Uses GPU ImageBitmap frame buffering to preserve pre-event video context.
+ * Frame-Buffer Video Recorder Service with MP4 Priority.
+ * Prioritizes native MP4 (H.264) recording for direct Windows Media Player / QuickTime compatibility,
+ * falling back to WebM when MP4 is unavailable in browser.
  */
 
 export class RecorderService {
@@ -28,8 +28,8 @@ export class RecorderService {
     this.TAIL_DURATION_MS = 2500; // 2.5s tail after human leaves
     this.videoDurationTarget = 'auto'; // 'auto' | 150 (2:30 min)
 
-    this.mimeType = 'video/webm';
-    this.fileExtension = 'webm';
+    this.mimeType = 'video/mp4';
+    this.fileExtension = 'mp4';
 
     // Callbacks
     this.onActivityStart = null;
@@ -38,19 +38,33 @@ export class RecorderService {
   }
 
   getBestMimeType() {
-    const types = [
-      { mime: 'video/webm;codecs=vp9', ext: 'webm' },
-      { mime: 'video/webm;codecs=vp8', ext: 'webm' },
-      { mime: 'video/webm', ext: 'webm' },
+    // Prioritize MP4 formats for native Windows Media Player / Mobile compatibility
+    const mp4Types = [
+      { mime: 'video/mp4;codecs=avc1.42E01E', ext: 'mp4' },
       { mime: 'video/mp4;codecs=avc1', ext: 'mp4' },
+      { mime: 'video/mp4;codecs=h264', ext: 'mp4' },
       { mime: 'video/mp4', ext: 'mp4' }
     ];
 
-    for (const t of types) {
+    for (const t of mp4Types) {
       if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t.mime)) {
         return t;
       }
     }
+
+    // Fallback to WebM if browser does not support MP4 MediaRecorder
+    const webmTypes = [
+      { mime: 'video/webm;codecs=vp9', ext: 'webm' },
+      { mime: 'video/webm;codecs=vp8', ext: 'webm' },
+      { mime: 'video/webm', ext: 'webm' }
+    ];
+
+    for (const t of webmTypes) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t.mime)) {
+        return t;
+      }
+    }
+
     return { mime: 'video/webm', ext: 'webm' };
   }
 
@@ -108,7 +122,6 @@ export class RecorderService {
   async onHumanDetected(videoOrCanvasElement, metadata = {}) {
     if (!this.isMonitoring) return;
 
-    // Clear tail timer if human reappeared in 'auto' mode
     if (this.tailTimer) {
       clearTimeout(this.tailTimer);
       this.tailTimer = null;
@@ -141,6 +154,10 @@ export class RecorderService {
       this.recordedChunks = [];
 
       try {
+        const selected = this.getBestMimeType();
+        this.mimeType = selected.mime;
+        this.fileExtension = selected.ext;
+
         this.mediaRecorder = new MediaRecorder(this.recStream, { mimeType: this.mimeType });
 
         this.mediaRecorder.ondataavailable = (e) => {
@@ -155,7 +172,6 @@ export class RecorderService {
 
         this.mediaRecorder.start(200);
 
-        // Handle Fixed Duration Target (e.g., 2:30 min = 150 seconds)
         if (typeof this.videoDurationTarget === 'number' && this.videoDurationTarget > 0) {
           if (this.fixedDurationTimer) clearTimeout(this.fixedDurationTimer);
           this.fixedDurationTimer = setTimeout(() => {
@@ -185,7 +201,6 @@ export class RecorderService {
   onHumanLeft() {
     if (!this.isMonitoring || !this.isRecordingActivity) return;
 
-    // In fixed duration mode (e.g. 2:30 min), keep recording until target duration completes
     if (typeof this.videoDurationTarget === 'number' && this.videoDurationTarget > 0) {
       return;
     }
