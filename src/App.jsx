@@ -9,6 +9,7 @@ import { detectorService } from './services/detectorService';
 import { recorderService } from './services/recorderService';
 import { storageService } from './services/storageService';
 import { driveService } from './services/driveService';
+import { mp4ConverterService } from './services/mp4ConverterService';
 
 export default function App() {
   // --- States ---
@@ -139,37 +140,42 @@ export default function App() {
         },
         onActivityComplete: async (result) => {
           setIsRecording(false);
+          
+          // Convert video to pure MP4
+          const mp4Result = await mp4ConverterService.convertToMp4(result.blob);
+          const finalBlob = mp4Result.blob;
+
           const savedVid = await storageService.saveVideo({
-            blob: result.blob,
+            blob: finalBlob,
             duration: result.duration,
             confidence: result.confidence || 0.8,
             peopleCount: result.peopleCount || 1,
             timestamp: result.timestamp,
-            fileExtension: result.fileExtension
+            fileExtension: 'mp4'
           });
 
           await storageService.addLog({
             type: 'recording_stop',
-            message: `Activity recording completed → ${result.duration.toFixed(1)} sec video saved (${(result.blob.size / (1024 * 1024)).toFixed(1)} MB)`,
+            message: `Activity recording completed → ${result.duration.toFixed(1)} sec MP4 video saved (${(finalBlob.size / (1024 * 1024)).toFixed(1)} MB)`,
             meta: { filename: savedVid.filename, duration: result.duration.toFixed(1) }
           });
 
           // Local Auto-Download
           if (autoDownload) {
-            storageService.downloadBlob(result.blob, savedVid.filename);
+            storageService.downloadBlob(finalBlob, savedVid.filename);
           }
 
           // Google Drive Automatic Cloud Upload
           if (driveService.isEnabled && driveService.webhookUrl) {
             driveService.uploadFile({
-              blob: result.blob,
+              blob: finalBlob,
               filename: savedVid.filename,
-              mimeType: result.mimeType
+              mimeType: 'video/mp4'
             }).then((driveRes) => {
               if (driveRes.success) {
                 storageService.addLog({
                   type: 'system',
-                  message: `Uploaded ${savedVid.filename} to Google Drive folder 1XOOsBa34u3CQxWH4t8C8xCADWrOIfUYo`
+                  message: `Uploaded ${savedVid.filename} (MP4) to Google Drive folder 1XOOsBa34u3CQxWH4t8C8xCADWrOIfUYo`
                 }).then(refreshGalleryAndLogs);
               }
             });
